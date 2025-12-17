@@ -133,6 +133,34 @@ FISH_PRICE_PER_KG = {
     RARITY_EPIC: 65,
 }
 
+# 经验系统配置
+FISH_EXP_BASE = {
+    RARITY_COMMON: 8,      # 杂鱼~基础经验
+    RARITY_UNCOMMON: 20,   # 冬雪莲基础经验
+    RARITY_RARE: 50,       # 稀有基础经验
+    RARITY_EPIC: 120,      # 史诗基础经验
+}
+
+# 升级所需经验表（从当前等级升到下一级）
+LEVEL_UP_EXP = {
+    1: 50,    # 1->2级
+    2: 100,   # 2->3级
+    3: 200,   # 3->4级（解锁河流）
+    4: 350,   # 4->5级
+    5: 550,   # 5->6级
+    6: 800,   # 6->7级（解锁湖泊）
+    7: 1100,  # 7->8级
+    8: 1450,  # 8->9级
+    9: 1850,  # 9->10级（满级）
+}
+
+# 地点解锁等级要求
+LOCATION_UNLOCK_LEVEL = {
+    "小溪": 1,   # 初始解锁
+    "河流": 4,   # 4级解锁
+    "湖泊": 7,   # 7级解锁
+}
+
 WEATHER_OPTIONS = [
     ("晴朗", 1.0, {RARITY_EPIC: 1.0, RARITY_RARE: 1.0}),
     ("小雨", 0.78, {RARITY_RARE: 1.1, RARITY_EPIC: 1.05}),
@@ -162,6 +190,8 @@ def _default_inventory_state():
     return {
         'fish_bag': [],  # 每条鱼记录 {name, weight, rarity}
         'money': 0,
+        'exp': 0,        # 当前经验值
+        'level': 1,      # 当前等级（1-10）
         'selected_bait': '普通鱼饵',
         'owned_rods': ['木质竿'],
         'equipped_rod': '木质竿',
@@ -355,6 +385,100 @@ class GameState:
             self.save_stats()
             return True
         return False
+
+    # ==========================
+    # 经验与等级系统
+    # ==========================
+    def get_level(self) -> int:
+        """获取当前等级"""
+        return self.inventory.get('level', 1)
+    
+    def get_exp(self) -> int:
+        """获取当前经验值"""
+        return self.inventory.get('exp', 0)
+    
+    def get_exp_for_next_level(self) -> int:
+        """获取升到下一级所需的经验值"""
+        current_level = self.get_level()
+        if current_level >= 10:
+            return 0  # 已满级
+        return LEVEL_UP_EXP.get(current_level, 0)
+    
+    def calculate_exp_gain(self, rarity: str, weight: float, min_weight: float = 0.1, max_weight: float = 1.0) -> int:
+        """计算获得的经验值
+        Args:
+            rarity: 鱼的稀有度
+            weight: 鱼的重量
+            min_weight: 该类鱼的最小重量（用于计算重量加成）
+            max_weight: 该类鱼的最大重量（用于计算重量加成）
+        Returns:
+            获得的经验值
+        """
+        # 基础经验值
+        base_exp = FISH_EXP_BASE.get(rarity, 5)
+        
+        # 重量加成：重量越大，经验越多（基于重量在范围内的比例）
+        # 最小重量时加成0.5，最大重量时加成1.5
+        if max_weight > min_weight:
+            weight_ratio = (weight - min_weight) / (max_weight - min_weight)
+            weight_multiplier = 0.5 + weight_ratio * 1.0  # 0.5 到 1.5
+        else:
+            weight_multiplier = 1.0
+        
+        # 最终经验值 = 基础经验 * 重量加成（向下取整）
+        exp_gain = int(base_exp * weight_multiplier)
+        return max(1, exp_gain)  # 至少1点经验
+    
+    def add_exp(self, amount: int) -> dict:
+        """添加经验值，并处理升级
+        Returns:
+            dict: {'exp_added': 添加的经验, 'leveled_up': 是否升级, 'new_level': 新等级, 'unlocked_location': 解锁的地点}
+        """
+        current_level = self.get_level()
+        current_exp = self.get_exp()
+        
+        # 如果已满级，不添加经验
+        if current_level >= 10:
+            return {'exp_added': 0, 'leveled_up': False, 'new_level': current_level, 'unlocked_location': None}
+        
+        # 添加经验
+        new_exp = current_exp + amount
+        new_level = current_level
+        leveled_up = False
+        unlocked_location = None
+        
+        # 检查是否升级
+        while new_level < 10:
+            exp_needed = LEVEL_UP_EXP.get(new_level, 0)
+            if exp_needed == 0:  # 已满级或配置错误
+                break
+            if new_exp >= exp_needed:
+                new_exp -= exp_needed
+                new_level += 1
+                leveled_up = True
+                # 检查是否解锁了新地点
+                for location, unlock_level in LOCATION_UNLOCK_LEVEL.items():
+                    if new_level == unlock_level:
+                        unlocked_location = location
+            else:
+                break
+        
+        # 更新状态
+        self.inventory['exp'] = new_exp
+        self.inventory['level'] = new_level
+        self.save_stats()
+        
+        return {
+            'exp_added': amount,
+            'leveled_up': leveled_up,
+            'new_level': new_level,
+            'unlocked_location': unlocked_location
+        }
+    
+    def is_location_unlocked(self, location: str) -> bool:
+        """检查地点是否已解锁"""
+        required_level = LOCATION_UNLOCK_LEVEL.get(location, 1)
+        return self.get_level() >= required_level
 
     def add_caught_fish(self, fish_name: str, weight: float, rarity: str):
         self.inventory.setdefault('fish_bag', []).append({
@@ -777,11 +901,20 @@ class FishingManager:
                 return False
             fish_name = self.current_selected_fish[0]
             rarity = self.current_selected_fish[1]
+            min_weight = self.current_selected_fish[2]
+            max_weight = self.current_selected_fish[3]
             weight = self._calculate_fish_weight(self.current_selected_fish)
             self.game_state.on_catch_success(fish_name, weight)
             self.game_state.add_caught_fish(fish_name, weight, rarity)
+            
+            # 计算并添加经验
+            exp_gain = self.game_state.calculate_exp_gain(rarity, weight, min_weight, max_weight)
+            level_result = self.game_state.add_exp(exp_gain)
+            
             if self.on_fishing_end_callback:
-                self.root.after(0, lambda: self.on_fishing_end_callback(True, fish_name, weight))
+                self.root.after(0, lambda: self.on_fishing_end_callback(
+                    True, fish_name, weight, exp_gain, level_result
+                ))
             return True
         return False
     
@@ -906,8 +1039,19 @@ class HomeScene(BaseScene):
         )
         title_label.pack(pady=(0, 20))
 
-        money_label = ttk.Label(self.frame, text=f"当前金币：{self.game_state.get_money():.0f}", font=("Microsoft YaHei", 10, "bold"))
-        money_label.pack(anchor="w", pady=(0, 8))
+        info_top_frame = ttk.Frame(self.frame)
+        info_top_frame.pack(fill="x", pady=(0, 8))
+        money_label = ttk.Label(info_top_frame, text=f"当前金币：{self.game_state.get_money():.0f}", font=("Microsoft YaHei", 10, "bold"))
+        money_label.pack(side="left", padx=(0, 20))
+        level = self.game_state.get_level()
+        exp = self.game_state.get_exp()
+        exp_needed = self.game_state.get_exp_for_next_level()
+        if exp_needed > 0:
+            level_text = f"等级 {level} | 经验 {exp}/{exp_needed}"
+        else:
+            level_text = f"等级 {level} (满级)"
+        level_label = ttk.Label(info_top_frame, text=level_text, font=("Microsoft YaHei", 10, "bold"), foreground="#FF6B35")
+        level_label.pack(side="left")
         
         # 功能区域
         # 1. 睡觉功能
@@ -965,11 +1109,24 @@ class HomeScene(BaseScene):
         location_frame = ttk.Frame(fishing_locations_frame)
         location_frame.pack(fill="x")
         
+        current_level = self.game_state.get_level()
         for i, (display_name, location_id) in enumerate(locations):
+            is_unlocked = self.game_state.is_location_unlocked(location_id)
+            required_level = LOCATION_UNLOCK_LEVEL.get(location_id, 1)
+            
+            # 根据是否解锁显示不同的按钮文本和状态
+            if is_unlocked:
+                btn_text = display_name
+                btn_state = "normal"
+            else:
+                btn_text = f"{display_name} (需要等级{required_level})"
+                btn_state = "disabled"
+            
             btn = ModernButton(
                 location_frame,
-                text=display_name,
-                command=lambda loc_id=location_id: self._go_fishing(loc_id)
+                text=btn_text,
+                command=lambda loc_id=location_id: self._go_fishing(loc_id),
+                state=btn_state
             )
             btn.pack(side="left", padx=5)
         
@@ -1001,6 +1158,15 @@ class HomeScene(BaseScene):
     
     def _go_fishing(self, location: str):
         """前往钓鱼地点"""
+        # 检查等级限制
+        if not self.game_state.is_location_unlocked(location):
+            required_level = LOCATION_UNLOCK_LEVEL.get(location, 1)
+            current_level = self.game_state.get_level()
+            messagebox.showwarning(
+                "地点未解锁",
+                f"需要等级 {required_level} 才能前往 {location}。\n当前等级：{current_level}\n继续钓鱼提升等级吧！"
+            )
+            return
         self.game_state.current_location = location
         self.scene_manager.switch_scene("fishing", location=location)
 
@@ -1624,6 +1790,7 @@ class FishingScene(BaseScene):
         self.qte_var = tk.StringVar(value="")
         self.environment_var = tk.StringVar(value="")
         self.money_var = tk.StringVar(value=f"金币：{self.game_state.get_money():.0f}")
+        self.level_var = tk.StringVar()
         self.qte_sequence = []
         self.qte_index = 0
         self.qte_deadline = None
@@ -1671,6 +1838,7 @@ class FishingScene(BaseScene):
         env_frame = ttk.Frame(game_frame)
         env_frame.pack(fill="x", pady=(0, 6))
         ttk.Label(env_frame, textvariable=self.environment_var).pack(side="left", padx=4)
+        ttk.Label(env_frame, textvariable=self.level_var, foreground="#FF6B35", font=("Microsoft YaHei", 10, "bold")).pack(side="right", padx=4)
         ttk.Label(env_frame, textvariable=self.money_var, foreground="#4CAAB9").pack(side="right", padx=4)
 
         equip_frame = ttk.Frame(game_frame)
@@ -1771,6 +1939,9 @@ class FishingScene(BaseScene):
             text="提示: 咬钩后按提示键完成QTE (最后一键总是空格)。",
             anchor="w"
         ).pack(fill="x", padx=8, pady=4)
+        
+        # 初始化等级显示
+        self._refresh_level_display()
     
     def _start_breathing(self):
         """开始呼吸灯动画"""
@@ -1833,6 +2004,7 @@ class FishingScene(BaseScene):
             self._start_breathing()
             self._refresh_environment_display()
             self._refresh_money_display()
+            self._refresh_level_display()
             self.scene_manager.root.focus_set()
     
     def _cancel_fishing(self):
@@ -1857,15 +2029,39 @@ class FishingScene(BaseScene):
         self.bite_alert_var.set("上钩！")
         self._update_qte_label()
     
-    def _on_fishing_end(self, success: bool, fish_name: str = None, weight: float = None):
+    def _on_fishing_end(self, success: bool, fish_name: str = None, weight: float = None, 
+                        exp_gain: int = 0, level_result: dict = None):
         """钓鱼结束事件处理"""
         self._stop_breathing()
         self.qte_var.set("")
         if success and fish_name and weight:
             self.status_var.set("✅ 成功钓到鱼！")
-            self.info_var.set(f"恭喜！你成功捕获了 {fish_name}（{weight}kg）！")
-            messagebox.showinfo("成功", f"🎉 成功钓到 {fish_name}！\n重量：{weight}kg")
+            # 构建信息字符串
+            info_parts = [f"恭喜！你成功捕获了 {fish_name}（{weight}kg）！"]
+            if exp_gain > 0:
+                info_parts.append(f"获得经验 +{exp_gain}")
+            self.info_var.set(" | ".join(info_parts))
+            
+            # 构建消息框内容
+            msg_parts = [f"🎉 成功钓到 {fish_name}！\n重量：{weight}kg"]
+            if exp_gain > 0:
+                msg_parts.append(f"\n获得经验：+{exp_gain}")
+                current_exp = self.game_state.get_exp()
+                exp_needed = self.game_state.get_exp_for_next_level()
+                if exp_needed > 0:
+                    msg_parts.append(f"\n当前经验：{current_exp}/{exp_needed}")
+            
+            # 检查是否升级
+            if level_result and level_result.get('leveled_up'):
+                new_level = level_result.get('new_level', 1)
+                msg_parts.append(f"\n\n✨ 等级提升！当前等级：{new_level}")
+                unlocked = level_result.get('unlocked_location')
+                if unlocked:
+                    msg_parts.append(f"\n🎯 解锁新地点：{unlocked}！")
+            
+            messagebox.showinfo("成功", "\n".join(msg_parts))
             self._check_student_event(fish_name, weight)
+            self._refresh_level_display()
         else:
             self.status_var.set("❌ 失败")
             self.info_var.set("反应太慢了，鱼儿跑掉了...")
@@ -1930,6 +2126,16 @@ class FishingScene(BaseScene):
 
     def _refresh_money_display(self):
         self.money_var.set(f"金币：{self.game_state.get_money():.0f}")
+    
+    def _refresh_level_display(self):
+        """刷新等级和经验显示"""
+        level = self.game_state.get_level()
+        exp = self.game_state.get_exp()
+        exp_needed = self.game_state.get_exp_for_next_level()
+        if exp_needed > 0:
+            self.level_var.set(f"等级 {level} | 经验 {exp}/{exp_needed}")
+        else:
+            self.level_var.set(f"等级 {level} (满级)")
 
     def _on_bait_change(self):
         bait = self.bait_combo.get()
@@ -1976,7 +2182,7 @@ class FishingGameUI:
     def __init__(self, root):
         self.root = root
         self.root.title(self.APP_NAME)
-        self.root.geometry("700x600")
+        self.root.geometry("960x720")
         self.root.configure(bg="#F5F5F5")
         
         # 游戏状态
