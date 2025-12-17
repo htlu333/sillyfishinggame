@@ -167,11 +167,8 @@ WEATHER_OPTIONS = [
     ("暴晒", 1.22, {RARITY_COMMON: 1.15, RARITY_EPIC: 1.15}),
 ]
 
-TIME_SLOTS = [
-    ("清晨", 0.9, {RARITY_UNCOMMON: 1.05}),
-    ("正午", 1.15, {RARITY_EPIC: 1.12}),
-    ("黄昏", 0.95, {RARITY_RARE: 1.1}),
-]
+# 固定时间设置（不再随机变化）
+FIXED_TIME_SLOT = ("白天", 1.0, {})  # 固定时间，时间倍率为1.0，无稀有度加成
 
 DAILY_REQUEST_POOL = [
     {"desc": "今天想喝鲫鱼汤", "prefer": "小鲫鱼"},
@@ -650,8 +647,12 @@ class GameState:
         return trust_factor * bait_factor * env_factor
 
     def roll_environment(self):
-        weather = random.choice(WEATHER_OPTIONS)
-        time_slot = random.choice(TIME_SLOTS)
+        """根据天数确定当天的固定天气，时间固定为清晨"""
+        current_day = self.get_day()
+        # 使用天数对天气数量取模，确保每天天气固定
+        weather_index = (current_day - 1) % len(WEATHER_OPTIONS)
+        weather = WEATHER_OPTIONS[weather_index]
+        time_slot = FIXED_TIME_SLOT  # 固定时间
         self.current_weather = weather[0]
         self.current_time_slot = time_slot[0]
         self.current_environment_wait = weather[1] * time_slot[1]
@@ -1452,13 +1453,6 @@ class DataBookScene(BaseScene):
         # 打包滚动区域
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        
-        # 前往钓鱼按钮
-        ModernButton(
-            self.frame,
-            text="前往钓鱼",
-            command=lambda: self.scene_manager.switch_scene("fishing")
-        ).pack(pady=10)
 
 
 # ==========================
@@ -1490,35 +1484,42 @@ class MarketScene(BaseScene):
         self.money_var = tk.StringVar()
         ttk.Label(self.frame, textvariable=self.money_var, font=("Microsoft YaHei", 11, "bold"), foreground="#4CAAB9").pack(anchor="w", pady=(0, 8))
 
-        sell_frame = StyledLabelFrame(self.frame, text="💰 卖鱼换钱", padding="10")
-        sell_frame.pack(fill="x", pady=(0, 10))
+        sell_frame = StyledLabelFrame(self.frame, text="💰 卖鱼换钱", padding="5")
+        sell_frame.pack(fill="x", pady=(0, 5))
         self.sell_info_var = tk.StringVar()
         ttk.Label(sell_frame, textvariable=self.sell_info_var).pack(anchor="w")
-        ModernButton(sell_frame, text="全部卖出", command=self._sell_all).pack(side="left", pady=4)
+        ModernButton(sell_frame, text="全部卖出", command=self._sell_all).pack(side="left", pady=2)
 
-        bait_frame = StyledLabelFrame(self.frame, text="🎣 鱼饵", padding="10")
-        bait_frame.pack(fill="x", pady=(0, 10))
+        bait_frame = StyledLabelFrame(self.frame, text="🎣 鱼饵", padding="5")
+        bait_frame.pack(fill="x", pady=(0, 5))
         self._build_buy_buttons(bait_frame, BAIT_CONFIG, category="bait")
 
-        rod_frame = StyledLabelFrame(self.frame, text="🪝 鱼竿 (延长QTE判定时间)", padding="10")
-        rod_frame.pack(fill="x", pady=(0, 10))
+        rod_frame = StyledLabelFrame(self.frame, text="🪝 鱼竿 (延长QTE判定时间)", padding="5")
+        rod_frame.pack(fill="x", pady=(0, 5))
         self._build_buy_buttons(rod_frame, ROD_CONFIG, category="rod", show_owned=True)
 
-        gift_frame = StyledLabelFrame(self.frame, text="🎁 礼物", padding="10")
-        gift_frame.pack(fill="x", pady=(0, 10))
+        gift_frame = StyledLabelFrame(self.frame, text="🎁 礼物", padding="5")
+        gift_frame.pack(fill="x", pady=(0, 5))
         self._build_buy_buttons(gift_frame, GIFT_SHOP_ITEMS, category="gift")
 
-        craft_frame = StyledLabelFrame(self.frame, text="🍳 烹饪/工具", padding="10")
-        craft_frame.pack(fill="x", pady=(0, 10))
+        craft_frame = StyledLabelFrame(self.frame, text="🍳 烹饪/工具", padding="5")
+        craft_frame.pack(fill="x", pady=(0, 5))
         self._build_buy_buttons(craft_frame, CRAFT_ITEMS, category="craft")
 
         self._refresh()
 
     def _build_buy_buttons(self, parent, config, category: str, show_owned=False):
-        for name, data in config.items():
+        items = list(config.items())
+        for idx, (name, data) in enumerate(items):
             price = data.get('price', 0)
-            row = ttk.Frame(parent)
-            row.pack(fill="x", pady=2)
+            # 计算行列位置：每行两个
+            row = idx // 2
+            col = idx % 2
+            
+            # 创建物品容器框架
+            item_frame = ttk.Frame(parent)
+            item_frame.grid(row=row, column=col, sticky="ew", padx=5, pady=2)
+            
             extra = ""
             if category == "bait":
                 count = self.game_state.inventory['bait_items'].get(name, 0)
@@ -1532,8 +1533,18 @@ class MarketScene(BaseScene):
             elif category == "rod" and show_owned:
                 owned = name in self.game_state.get_owned_rods()
                 extra = "（已拥有）" if owned else ""
-            ttk.Label(row, text=f"{name} - {price} 金 {extra}").pack(side="left")
-            ModernButton(row, text="购买", command=lambda n=name, c=category: self._buy(n, c)).pack(side="right")
+            
+            # 物品信息标签
+            info_label = ttk.Label(item_frame, text=f"{name} - {price} 金 {extra}")
+            info_label.pack(side="left", padx=(0, 5))
+            
+            # 购买按钮
+            buy_button = ModernButton(item_frame, text="购买", command=lambda n=name, c=category: self._buy(n, c))
+            buy_button.pack(side="right")
+        
+        # 配置列的权重，使两列平分空间
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
 
     def _buy(self, name: str, category: str):
         price = 0
@@ -2237,10 +2248,9 @@ class FishingScene(BaseScene):
 
     def _refresh_environment_display(self):
         weather = getattr(self.game_state, 'current_weather', '晴朗')
-        slot = getattr(self.game_state, 'current_time_slot', '清晨')
         bait = self.game_state.inventory.get('selected_bait', '普通鱼饵')
         rod = self.game_state.inventory.get('equipped_rod', '木质竿')
-        self.environment_var.set(f"天气：{weather}｜时间：{slot}｜鱼饵：{bait}｜鱼竿：{rod}")
+        self.environment_var.set(f"天气：{weather}｜鱼饵：{bait}｜鱼竿：{rod}")
 
     def _refresh_money_display(self):
         self.money_var.set(f"金币：{self.game_state.get_money():.0f}")
