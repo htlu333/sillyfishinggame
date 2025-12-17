@@ -192,6 +192,7 @@ def _default_inventory_state():
         'money': 0,
         'exp': 0,        # 当前经验值
         'level': 1,      # 当前等级（1-10）
+        'day': 1,        # 当前天数（从第一天开始）
         'selected_bait': '普通鱼饵',
         'owned_rods': ['木质竿'],
         'equipped_rod': '木质竿',
@@ -385,6 +386,26 @@ class GameState:
             self.save_stats()
             return True
         return False
+
+    # ==========================
+    # 天数系统
+    # ==========================
+    def get_day(self) -> int:
+        """获取当前天数"""
+        return self.inventory.get('day', 1)
+    
+    def add_day(self, amount: int = 1) -> int:
+        """增加天数
+        Args:
+            amount: 增加的天数，默认为1
+        Returns:
+            新的天数
+        """
+        current_day = self.get_day()
+        new_day = current_day + amount
+        self.inventory['day'] = new_day
+        self.save_stats()
+        return new_day
 
     # ==========================
     # 经验与等级系统
@@ -671,7 +692,14 @@ class GameState:
 
     def gift_to_student(self, name: str, tags=None, weight: float = 0.0):
         if not self.student_state.get('met'):
-            return {'trust_delta': 0, 'note': '还未遇见林汐'}
+            return {'trust_delta': 0, 'note': '还未遇见林汐', 'success': False}
+        
+        # 检查今天是否已经送过礼物
+        current_day = self.get_day()
+        last_gift_day = self.student_state.get('last_gift_day', 0)
+        if last_gift_day >= current_day:
+            return {'trust_delta': 0, 'note': '今天已经送过礼物了，明天再来吧！', 'success': False}
+        
         tags = tags or []
         like_tags = {"甜", "纪念", "热食"}
         dislike_tags = {"辣", "生鱼"}
@@ -696,12 +724,16 @@ class GameState:
         before = self.student_state.get('trust', 0)
         self.student_state['trust'] = max(0, min(100, before + base_gain))
         self.student_state['food_stock'] = round(self.student_state.get('food_stock', 0.0) + weight, 2)
+        # 记录今天送过礼物的天数（用于每日限制检查）
+        self.student_state['last_gift_day'] = current_day
+        # 同时记录实际日期（用于情绪衰减）
         self._set_gift_timestamp()
         self.save_stats()
         return {
             'trust_delta': self.student_state['trust'] - before,
             'trust': self.student_state['trust'],
-            'food_stock': self.student_state['food_stock']
+            'food_stock': self.student_state['food_stock'],
+            'success': True
         }
     
     def save_stats(self):
@@ -952,6 +984,8 @@ class SceneManager:
         self.current_scene = None
         self.scenes = {}
         self.main_container = None
+        self.top_bar = None  # 顶部状态栏
+        self.day_label = None  # 天数标签
         
     def register_scene(self, name: str, scene_class):
         """注册场景"""
@@ -968,6 +1002,25 @@ class SceneManager:
             self.current_scene.destroy()
             self.current_scene = None
         
+        # 确保顶部状态栏存在
+        if self.top_bar is None:
+            self.top_bar = ttk.Frame(self.root, padding="10 5")
+            self.top_bar.pack(fill="x", side="top")
+            self.top_bar.configure(relief="solid", borderwidth=1)
+            
+            # 天数显示
+            self.day_label = tk.Label(
+                self.top_bar,
+                text=f"第 {self.game_state.get_day()} 天",
+                font=("Microsoft YaHei", 12, "bold"),
+                fg="#FF6B35",
+                bg="#F5F5F5"
+            )
+            self.day_label.pack(side="right", padx=10)
+        else:
+            # 更新天数显示
+            self._update_day_display()
+        
         # 确保主容器存在
         if self.main_container is None:
             self.main_container = ttk.Frame(self.root, padding="15")
@@ -977,6 +1030,11 @@ class SceneManager:
         scene_class = self.scenes[scene_name]
         self.current_scene = scene_class(self.main_container, self.game_state, self, **kwargs)
         self.current_scene.create()
+    
+    def _update_day_display(self):
+        """更新天数显示"""
+        if self.day_label:
+            self.day_label.config(text=f"第 {self.game_state.get_day()} 天")
         
     def setup_theme(self):
         """设置主题样式（全局）"""
@@ -1154,7 +1212,11 @@ class HomeScene(BaseScene):
     
     def _sleep(self):
         """睡觉功能"""
-        messagebox.showinfo("睡觉", "💤 你美美地睡了一觉，精力恢复了！")
+        new_day = self.game_state.add_day(1)
+        # 更新天数显示
+        if self.scene_manager and self.scene_manager.day_label:
+            self.scene_manager._update_day_display()
+        messagebox.showinfo("睡觉", f"💤 你美美地睡了一觉，精力恢复了！\n新的一天开始了，今天是第 {new_day} 天。")
     
     def _go_fishing(self, location: str):
         """前往钓鱼地点"""
@@ -1593,7 +1655,8 @@ class StudentScene(BaseScene):
         ttk.Label(gift_frame, text="可赠送物品：").pack(side="left")
         self.gift_combo = ttk.Combobox(gift_frame, textvariable=self.gift_choice_var, width=40, state="readonly")
         self.gift_combo.pack(side="left", padx=6)
-        ModernButton(gift_frame, text="赠送", command=self._gift).pack(side="left", padx=4)
+        self.gift_button = ModernButton(gift_frame, text="赠送", command=self._gift)
+        self.gift_button.pack(side="left", padx=4)
         ModernButton(gift_frame, text="简易烹饪（消耗1条鱼）", command=self._cook).pack(side="left", padx=4)
 
         self._refresh()
@@ -1627,8 +1690,18 @@ class StudentScene(BaseScene):
             self.request_var.set(f"今日委托：{desc}")
         else:
             self.request_var.set("今日委托：暂无")
-        last_gift = state.get('last_gift_date') or "暂无赠送记录"
-        self.decay_var.set(f"最近赠送：{last_gift}（超过2天未赠送会轻微掉信任）")
+        # 每日赠送限制提示和按钮状态
+        current_day = self.game_state.get_day()
+        last_gift_day = state.get('last_gift_day', 0)
+        if last_gift_day >= current_day:
+            gift_status = f"今日已赠送（每天只能送一次）"
+            if hasattr(self, 'gift_button'):
+                self.gift_button.config(state="disabled")
+        else:
+            gift_status = "今日未赠送"
+            if hasattr(self, 'gift_button'):
+                self.gift_button.config(state="normal")
+        self.decay_var.set(f"赠送状态：{gift_status}")
 
         # 赠送选项
         options = self._build_gift_options()
@@ -1703,6 +1776,14 @@ class StudentScene(BaseScene):
         if idx < 0 or idx >= len(self.gift_options):
             return
         opt = self.gift_options[idx]
+        
+        # 先检查今天是否已经送过
+        current_day = self.game_state.get_day()
+        last_gift_day = self.game_state.student_state.get('last_gift_day', 0)
+        if last_gift_day >= current_day:
+            messagebox.showwarning("赠送", "今天已经送过礼物了，明天再来吧！")
+            return
+        
         if opt['type'] == 'fish':
             fish = self.game_state.remove_one_fish(opt['name'])
             if not fish:
@@ -1711,6 +1792,10 @@ class StudentScene(BaseScene):
                 return
             weight = fish.get('weight', opt.get('weight', 0.5))
             result = self.game_state.gift_to_student(opt['name'], tags=['生鱼', '鱼肉'], weight=weight)
+            if not result.get('success', True):
+                messagebox.showwarning("赠送", result.get('note', '赠送失败'))
+                self._refresh()
+                return
             message = f"送出 {opt['name']}，信任变化 {result['trust_delta']}，累计补给 {result['food_stock']:.2f} kg"
             messagebox.showinfo("赠送成功", message)
         elif opt['type'] == 'cooked':
@@ -1719,6 +1804,10 @@ class StudentScene(BaseScene):
                 self._refresh()
                 return
             result = self.game_state.gift_to_student(opt['name'], tags=opt.get('tags', []), weight=1.0)
+            if not result.get('success', True):
+                messagebox.showwarning("赠送", result.get('note', '赠送失败'))
+                self._refresh()
+                return
             messagebox.showinfo("赠送成功", f"送出热乎的烤鱼，信任变化 {result['trust_delta']}")
         else:
             if not self.game_state.consume_item(opt['name']):
@@ -1726,6 +1815,10 @@ class StudentScene(BaseScene):
                 self._refresh()
                 return
             result = self.game_state.gift_to_student(opt['name'], tags=opt.get('tags', []), weight=0.0)
+            if not result.get('success', True):
+                messagebox.showwarning("赠送", result.get('note', '赠送失败'))
+                self._refresh()
+                return
             messagebox.showinfo("赠送成功", f"送出 {opt['name']}，信任变化 {result['trust_delta']}")
         self._refresh()
 
