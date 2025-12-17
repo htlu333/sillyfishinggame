@@ -1,7 +1,7 @@
 """
 钓鱼小游戏
-功能：点击钓鱼后开始钓鱼，经过随机时间后弹出"上钩！"提示，
-      玩家必须在1秒内按空格键才能成功钓到鱼。
+功能：点击开始后等待上钩，出现按键序列(QTE)及时按对即可钓鱼成功；
+    卖鱼赚钱，买鱼饵/鱼竿/礼物，推进林汐事件与好感。
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -89,9 +89,101 @@ LOCATION_FISH_CONFIG = {
 
 
 # ==========================
+# 经济与道具配置
+# ==========================
+BAIT_CONFIG = {
+    "普通鱼饵": {
+        "price": 0,
+        "rarity_bonus": {RARITY_COMMON: 1.0, RARITY_UNCOMMON: 1.0, RARITY_RARE: 1.0, RARITY_EPIC: 1.0},
+        "wait_multiplier": 1.0
+    },
+    "高级蚯蚓": {
+        "price": 80,
+        "rarity_bonus": {RARITY_COMMON: 0.9, RARITY_UNCOMMON: 1.1, RARITY_RARE: 1.25, RARITY_EPIC: 1.1},
+        "wait_multiplier": 0.9
+    },
+    "路亚假饵": {
+        "price": 120,
+        "rarity_bonus": {RARITY_COMMON: 0.85, RARITY_UNCOMMON: 1.0, RARITY_RARE: 1.1, RARITY_EPIC: 1.35},
+        "wait_multiplier": 0.95
+    }
+}
+
+ROD_CONFIG = {
+    "木质竿": {"price": 0, "window": 1.0},
+    "碳素竿": {"price": 300, "window": 1.4},
+    "竞赛竿": {"price": 600, "window": 1.6}
+}
+
+GIFT_SHOP_ITEMS = {
+    "奶茶": {"price": 60, "tags": ["甜", "饮品"]},
+    "草莓蛋糕": {"price": 120, "tags": ["甜", "点心"]},
+    "辣条": {"price": 40, "tags": ["辣", "零食"]},
+    "相机冲印券": {"price": 90, "tags": ["纪念"]},
+}
+
+CRAFT_ITEMS = {
+    "卡式炉": {"price": 180},
+}
+
+FISH_PRICE_PER_KG = {
+    RARITY_COMMON: 12,
+    RARITY_UNCOMMON: 20,
+    RARITY_RARE: 38,
+    RARITY_EPIC: 65,
+}
+
+WEATHER_OPTIONS = [
+    ("晴朗", 1.0, {RARITY_EPIC: 1.0, RARITY_RARE: 1.0}),
+    ("小雨", 0.78, {RARITY_RARE: 1.1, RARITY_EPIC: 1.05}),
+    ("暴晒", 1.22, {RARITY_COMMON: 1.15, RARITY_EPIC: 1.15}),
+]
+
+TIME_SLOTS = [
+    ("清晨", 0.9, {RARITY_UNCOMMON: 1.05}),
+    ("正午", 1.15, {RARITY_EPIC: 1.12}),
+    ("黄昏", 0.95, {RARITY_RARE: 1.1}),
+]
+
+DAILY_REQUEST_POOL = [
+    {"desc": "今天想喝鲫鱼汤", "prefer": "小鲫鱼"},
+    {"desc": "想吃点甜的", "tag": "甜"},
+    {"desc": "想试试烤鱼", "tag": "热食"},
+    {"desc": "想解馋吃辣条", "prefer": "辣条"},
+]
+
+
+# ==========================
 # 统计文件管理
 # ==========================
 STATS_FILE = "fishing_stats.json"
+
+def _default_inventory_state():
+    return {
+        'fish_bag': [],  # 每条鱼记录 {name, weight, rarity}
+        'money': 0,
+        'selected_bait': '普通鱼饵',
+        'owned_rods': ['木质竿'],
+        'equipped_rod': '木质竿',
+        'bait_items': {name: (3 if name == '普通鱼饵' else 0) for name in BAIT_CONFIG.keys()},
+        'gift_items': {name: 0 for name in GIFT_SHOP_ITEMS.keys()},
+        'craft_items': {name: 0 for name in CRAFT_ITEMS.keys()},
+        'cooked_items': {"烤鱼": 0},
+    }
+
+def _default_student_state():
+    """默认的女高中生事件状态"""
+    return {
+        'name': '林汐',
+        'met': False,
+        'rescued': False,
+        'trust': 0,
+        'food_stock': 0.0,
+        'encounter_rolls': 0,
+        'last_gift_date': None,
+        'daily_request': None,
+        'daily_request_date': None
+    }
 
 def load_statistics():
     """从文件加载统计数据"""
@@ -99,18 +191,35 @@ def load_statistics():
         try:
             with open(STATS_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                return data.get('fish_statistics', {}), data.get('money', 0)
+                student_state = data.get('student_state', _default_student_state())
+                merged_state = _default_student_state()
+                merged_state.update(student_state)
+
+                inventory = data.get('inventory', _default_inventory_state())
+                merged_inventory = _default_inventory_state()
+                try:
+                    # 深度合并计数字典
+                    merged_inventory.update({k: v for k, v in inventory.items() if k in merged_inventory})
+                    for key in ('bait_items', 'gift_items', 'craft_items', 'cooked_items'):
+                        merged_inventory[key].update(inventory.get(key, {}))
+                    # 鱼袋直接覆盖
+                    merged_inventory['fish_bag'] = inventory.get('fish_bag', [])
+                except Exception:
+                    merged_inventory = _default_inventory_state()
+
+                return data.get('fish_statistics', {}), merged_inventory, merged_state
         except Exception as e:
             print(f"加载统计数据失败: {e}")
-            return {}, 0
-    return {}, 0
+            return {}, _default_inventory_state(), _default_student_state()
+    return {}, _default_inventory_state(), _default_student_state()
 
-def save_statistics(fish_statistics, money=0):
+def save_statistics(fish_statistics, inventory_state=None, student_state=None):
     """保存统计数据到文件"""
     try:
         data = {
             'fish_statistics': fish_statistics,
-            'money': money,
+            'inventory': inventory_state or _default_inventory_state(),
+            'student_state': student_state or _default_student_state(),
             'last_update': datetime.datetime.now().isoformat()
         }
         with open(STATS_FILE, 'w', encoding='utf-8') as f:
@@ -136,11 +245,15 @@ class GameState:
         self.current_fish_weight = None  # 当前钓到的鱼的重量
         
         # 从文件加载统计数据
-        self.fish_statistics, self.money = load_statistics()
+        self.fish_statistics, inventory_state, student_state = load_statistics()
         
         # 预留扩展字段
         self.current_location = "小溪"  # 当前钓鱼地点（默认小溪）
         self.home_data = {}  # 家园数据（预留）
+        self.student_state = student_state
+        self.inventory = inventory_state
+        self._ensure_student_state()
+        self._ensure_inventory_state()
         
         # 初始化所有鱼的统计数据（如果文件中没有）
         self._init_fish_statistics()
@@ -151,10 +264,325 @@ class GameState:
             for fish_name, _, _, _, _, _ in fish_list:
                 if fish_name not in self.fish_statistics:
                     self.fish_statistics[fish_name] = {'count': 0, 'max_weight': 0.0}
+
+    def _ensure_student_state(self):
+        """兜底补齐女高中生事件状态"""
+        merged = _default_student_state()
+        try:
+            merged.update(self.student_state or {})
+        except Exception:
+            pass
+        self.student_state = merged
+
+    def _ensure_inventory_state(self):
+        """兜底补齐背包与金钱状态"""
+        base = _default_inventory_state()
+        try:
+            inv = self.inventory or {}
+        except Exception:
+            inv = {}
+        # 基本字段
+        base.update({k: v for k, v in inv.items() if k in base})
+        # 合并计数字典
+        for key in ('bait_items', 'gift_items', 'craft_items', 'cooked_items'):
+            try:
+                base[key].update(inv.get(key, {}))
+            except Exception:
+                pass
+        # 鱼袋
+        base['fish_bag'] = inv.get('fish_bag', []) if isinstance(inv.get('fish_bag', []), list) else []
+        self.inventory = base
+
+    def register_student_encounter(self):
+        """首次遇到林汐"""
+        self.student_state['met'] = True
+        self.student_state['encounter_rolls'] = self.student_state.get('encounter_rolls', 0)
+        self.student_state['trust'] = max(self.student_state.get('trust', 0), 5)
+        self.save_stats()
+
+    def add_student_food(self, weight: float):
+        """把钓到的鱼分享给林汐，返回更新信息"""
+        if not self.student_state.get('met'):
+            return {'trust_delta': 0, 'ready': False}
+        self.student_state['food_stock'] = round(self.student_state.get('food_stock', 0.0) + weight, 2)
+        trust_gain = 2 if weight >= 1.0 else 1
+        before_trust = self.student_state.get('trust', 0)
+        self.student_state['trust'] = min(100, before_trust + trust_gain)
+        ready = self.student_state['food_stock'] >= 8.0 and not self.student_state.get('rescued')
+        self.save_stats()
+        return {
+            'trust_delta': self.student_state['trust'] - before_trust,
+            'trust': self.student_state['trust'],
+            'food_stock': self.student_state['food_stock'],
+            'ready': ready
+        }
+
+    def try_rescue_student(self):
+        """满足条件后安排救援"""
+        if not self.student_state.get('met'):
+            return False
+        if self.student_state.get('rescued'):
+            return True
+        if self.student_state.get('food_stock', 0) < 8.0:
+            return False
+        self.student_state['rescued'] = True
+        self.student_state['trust'] = max(self.student_state.get('trust', 0), 40)
+        self.save_stats()
+        return True
+
+    def boost_student_trust(self, amount: int = 3):
+        """鼓励对话提升信任"""
+        if not self.student_state.get('met'):
+            return 0
+        before = self.student_state.get('trust', 0)
+        self.student_state['trust'] = min(100, before + amount)
+        self.save_stats()
+        return self.student_state['trust'] - before
+
+    # ==========================
+    # 经济、背包、道具
+    # ==========================
+    def get_money(self) -> float:
+        return round(self.inventory.get('money', 0), 2)
+
+    def add_money(self, amount: float):
+        self.inventory['money'] = round(max(0, self.get_money() + amount), 2)
+        self.save_stats()
+
+    def spend_money(self, amount: float) -> bool:
+        if self.get_money() >= amount:
+            self.inventory['money'] = round(self.get_money() - amount, 2)
+            self.save_stats()
+            return True
+        return False
+
+    def add_caught_fish(self, fish_name: str, weight: float, rarity: str):
+        self.inventory.setdefault('fish_bag', []).append({
+            'name': fish_name,
+            'weight': weight,
+            'rarity': rarity
+        })
+        self.save_stats()
+
+    def sell_all_fish(self):
+        bag = self.inventory.get('fish_bag', [])
+        earnings = 0.0
+        for fish in bag:
+            rarity = fish.get('rarity', RARITY_COMMON)
+            price_per = FISH_PRICE_PER_KG.get(rarity, 10)
+            earnings += price_per * fish.get('weight', 0)
+        sold_count = len(bag)
+        self.inventory['fish_bag'] = []
+        self.add_money(earnings)
+        return earnings, sold_count
+
+    def remove_one_fish(self, fish_name: str):
+        bag = self.inventory.get('fish_bag', [])
+        for idx, fish in enumerate(bag):
+            if fish.get('name') == fish_name:
+                bag.pop(idx)
+                self.save_stats()
+                return fish
+        return None
+
+    def fish_bag_summary(self):
+        summary = {}
+        for fish in self.inventory.get('fish_bag', []):
+            name = fish.get('name')
+            summary.setdefault(name, {'count': 0, 'total_weight': 0.0, 'rarity': fish.get('rarity', RARITY_COMMON)})
+            summary[name]['count'] += 1
+            summary[name]['total_weight'] += fish.get('weight', 0.0)
+        return summary
+
+    def get_owned_rods(self):
+        return self.inventory.get('owned_rods', ['木质竿'])
+
+    def equip_rod(self, rod_name: str) -> bool:
+        if rod_name in self.get_owned_rods():
+            self.inventory['equipped_rod'] = rod_name
+            self.save_stats()
+            return True
+        return False
+
+    def select_bait(self, bait_name: str) -> bool:
+        if bait_name in BAIT_CONFIG:
+            self.inventory['selected_bait'] = bait_name
+            self.save_stats()
+            return True
+        return False
+
+    def consume_bait(self) -> str:
+        bait = self.inventory.get('selected_bait', '普通鱼饵')
+        if bait == '普通鱼饵':
+            return bait
+        count = self.inventory['bait_items'].get(bait, 0)
+        if count > 0:
+            self.inventory['bait_items'][bait] = count - 1
+            self.save_stats()
+            return bait
+        # 如果没货自动回退
+        self.inventory['selected_bait'] = '普通鱼饵'
+        self.save_stats()
+        return '普通鱼饵'
+
+    def acquire_item(self, item_name: str, count: int = 1):
+        if item_name in BAIT_CONFIG:
+            self.inventory['bait_items'][item_name] = self.inventory['bait_items'].get(item_name, 0) + count
+        elif item_name in GIFT_SHOP_ITEMS:
+            self.inventory['gift_items'][item_name] = self.inventory['gift_items'].get(item_name, 0) + count
+        elif item_name in CRAFT_ITEMS:
+            self.inventory['craft_items'][item_name] = self.inventory['craft_items'].get(item_name, 0) + count
+        elif item_name == "烤鱼":
+            self.inventory['cooked_items'][item_name] = self.inventory['cooked_items'].get(item_name, 0) + count
+        self.save_stats()
+
+    def consume_item(self, item_name: str) -> bool:
+        if item_name in BAIT_CONFIG:
+            count = self.inventory['bait_items'].get(item_name, 0)
+            if count > 0:
+                self.inventory['bait_items'][item_name] = count - 1
+                self.save_stats()
+                return True
+            return False
+        if item_name in GIFT_SHOP_ITEMS:
+            count = self.inventory['gift_items'].get(item_name, 0)
+            if count > 0:
+                self.inventory['gift_items'][item_name] = count - 1
+                self.save_stats()
+                return True
+            return False
+        if item_name in self.inventory.get('cooked_items', {}):
+            count = self.inventory['cooked_items'].get(item_name, 0)
+            if count > 0:
+                self.inventory['cooked_items'][item_name] = count - 1
+                self.save_stats()
+                return True
+        return False
+
+    def cook_one_fish(self):
+        """将任意一条鱼烤熟，需卡式炉"""
+        if self.inventory['craft_items'].get('卡式炉', 0) <= 0:
+            return False, "缺少卡式炉"
+        if not self.inventory.get('fish_bag'):
+            return False, "没有鱼可以烤"
+        fish = self.inventory['fish_bag'].pop(0)
+        self.acquire_item('烤鱼', 1)
+        self.save_stats()
+        return True, f"将 {fish.get('name', '鱼')} 烤成了热乎的烤鱼"
+
+    def add_rod(self, rod_name: str):
+        rods = self.inventory.setdefault('owned_rods', ['木质竿'])
+        if rod_name not in rods:
+            rods.append(rod_name)
+        self.save_stats()
+
+    def get_catch_window(self) -> float:
+        rod = self.inventory.get('equipped_rod', '木质竿')
+        rod_bonus = ROD_CONFIG.get(rod, {}).get('window', 1.0)
+        trust_bonus = 0.1 if self.student_state.get('rescued') else 0.0
+        return 1.0 * rod_bonus + trust_bonus
+
+    def get_wait_time_multiplier(self) -> float:
+        """根据伙伴和天气加成调整等待时间"""
+        trust_factor = 1.0
+        if self.student_state.get('rescued'):
+            trust = self.student_state.get('trust', 0)
+            trust_factor = max(0.6, 1 - trust * 0.0025)
+        bait = self.inventory.get('selected_bait', '普通鱼饵')
+        bait_factor = BAIT_CONFIG.get(bait, {}).get('wait_multiplier', 1.0)
+        env_factor = getattr(self, 'current_environment_wait', 1.0)
+        return trust_factor * bait_factor * env_factor
+
+    def roll_environment(self):
+        weather = random.choice(WEATHER_OPTIONS)
+        time_slot = random.choice(TIME_SLOTS)
+        self.current_weather = weather[0]
+        self.current_time_slot = time_slot[0]
+        self.current_environment_wait = weather[1] * time_slot[1]
+        self.current_environment_rarity_bonus = {}
+        self.current_environment_rarity_bonus.update(weather[2])
+        self.current_environment_rarity_bonus.update(time_slot[2])
+
+    def get_rarity_weight_multiplier(self, rarity: str) -> float:
+        bait = self.inventory.get('selected_bait', '普通鱼饵')
+        bait_bonus = BAIT_CONFIG.get(bait, {}).get('rarity_bonus', {}).get(rarity, 1.0)
+        env_bonus = self.current_environment_rarity_bonus.get(rarity, 1.0) if hasattr(self, 'current_environment_rarity_bonus') else 1.0
+        return bait_bonus * env_bonus
+
+    # ==========================
+    # 林汐：礼物、委托、情绪
+    # ==========================
+    def _today_str(self):
+        return datetime.date.today().isoformat()
+
+    def ensure_daily_request(self):
+        today = self._today_str()
+        if self.student_state.get('daily_request_date') != today:
+            req = random.choice(DAILY_REQUEST_POOL)
+            self.student_state['daily_request'] = req
+            self.student_state['daily_request_date'] = today
+            self.save_stats()
+        return self.student_state.get('daily_request')
+
+    def apply_mood_decay(self):
+        last = self.student_state.get('last_gift_date')
+        if not last:
+            return 0
+        try:
+            last_day = datetime.date.fromisoformat(last)
+            delta = (datetime.date.today() - last_day).days
+            if delta > 2:
+                decay = min(6, (delta - 2) * 2)
+                before = self.student_state.get('trust', 0)
+                self.student_state['trust'] = max(0, before - decay)
+                self.save_stats()
+                return before - self.student_state['trust']
+        except Exception:
+            return 0
+        return 0
+
+    def _set_gift_timestamp(self):
+        self.student_state['last_gift_date'] = self._today_str()
+        self.save_stats()
+
+    def gift_to_student(self, name: str, tags=None, weight: float = 0.0):
+        if not self.student_state.get('met'):
+            return {'trust_delta': 0, 'note': '还未遇见林汐'}
+        tags = tags or []
+        like_tags = {"甜", "纪念", "热食"}
+        dislike_tags = {"辣", "生鱼"}
+
+        base_gain = 2
+        if any(tag in like_tags for tag in tags):
+            base_gain += 2
+        if any(tag in dislike_tags for tag in tags):
+            base_gain -= 3
+        if weight >= 1.5:
+            base_gain += 1
+
+        daily_req = self.ensure_daily_request()
+        if daily_req:
+            prefer = daily_req.get('prefer')
+            tag_pref = daily_req.get('tag')
+            if prefer and prefer == name:
+                base_gain += 2
+            if tag_pref and tag_pref in tags:
+                base_gain += 2
+
+        before = self.student_state.get('trust', 0)
+        self.student_state['trust'] = max(0, min(100, before + base_gain))
+        self.student_state['food_stock'] = round(self.student_state.get('food_stock', 0.0) + weight, 2)
+        self._set_gift_timestamp()
+        self.save_stats()
+        return {
+            'trust_delta': self.student_state['trust'] - before,
+            'trust': self.student_state['trust'],
+            'food_stock': self.student_state['food_stock']
+        }
     
     def save_stats(self):
         """保存统计数据到文件"""
-        save_statistics(self.fish_statistics, self.money)
+        save_statistics(self.fish_statistics, self.inventory, self.student_state)
     
     def reset_fishing_state(self):
         """重置钓鱼状态"""
@@ -215,12 +643,15 @@ class FishingManager:
         
         # 当前选中的鱼（用于计算时间和概率）
         self.current_selected_fish = None
+        self.current_bait_used = '普通鱼饵'
+        self.qte_sequence = []
+        self.qte_deadline = None
         
         # 钓鱼参数
-        self.catch_window = 1.0  # 咬钩后的反应时间窗口（秒）
+        self.catch_window = 1.0  # 咬钩后的反应时间窗口（秒），后续根据鱼竿覆盖
         
         # 回调函数（由UI设置）
-        self.on_bite_callback = None  # 咬钩时的回调
+        self.on_bite_callback = None  # 咬钩时的回调，参数(qte_sequence)
         self.on_fishing_end_callback = None  # 钓鱼结束时的回调
     
     def _select_fish_by_probability(self, location: str):
@@ -229,19 +660,27 @@ class FishingManager:
         fish_list = LOCATION_FISH_CONFIG.get(location, LOCATION_FISH_CONFIG["小溪"])
         
         # 计算总权重
-        total_weight = sum(weight for _, _, _, _, weight, _ in fish_list)
+        weighted_list = []
+        total_weight = 0
+        for fish_info in fish_list:
+            rarity = fish_info[1]
+            base_weight = fish_info[4]
+            mult = self.game_state.get_rarity_weight_multiplier(rarity)
+            adjusted = base_weight * mult
+            weighted_list.append((fish_info, adjusted))
+            total_weight += adjusted
         
         # 随机选择
         rand = random.uniform(0, total_weight)
         cumulative = 0
         
-        for fish_info in fish_list:
-            cumulative += fish_info[4]  # 概率权重
+        for fish_info, adj_weight in weighted_list:
+            cumulative += adj_weight
             if rand <= cumulative:
                 return fish_info
         
         # 默认返回第一种
-        return fish_list[0]
+        return weighted_list[0][0]
     
     def _calculate_fish_weight(self, fish_info):
         """计算鱼的重量（在范围内随机）"""
@@ -252,7 +691,22 @@ class FishingManager:
         """计算等待时间（根据鱼的稀有度）"""
         _, _, _, _, _, time_range = fish_info
         min_time, max_time = time_range
-        return random.uniform(min_time, max_time)
+        base_time = random.uniform(min_time, max_time)
+        return base_time * self.game_state.get_wait_time_multiplier()
+
+    def _generate_qte_sequence(self, rarity: str):
+        """根据稀有度生成按键序列"""
+        pool = ['a', 'd', 'w', 's', 'space']
+        length_map = {
+            RARITY_COMMON: 1,
+            RARITY_UNCOMMON: 2,
+            RARITY_RARE: 3,
+            RARITY_EPIC: 4
+        }
+        length = length_map.get(rarity, 1)
+        seq = [random.choice(pool[:-1]) for _ in range(length - 1)] if length > 1 else []
+        seq.append('space')
+        return seq
     
     def set_callbacks(self, on_bite, on_fishing_end):
         """设置回调函数"""
@@ -265,6 +719,9 @@ class FishingManager:
             return False
         
         self.game_state.start_fishing()
+        self.game_state.roll_environment()
+        self.current_bait_used = self.game_state.consume_bait()
+        self.catch_window = self.game_state.get_catch_window()
         
         # 根据当前地点选择要钓的鱼
         location = self.game_state.current_location
@@ -290,10 +747,13 @@ class FishingManager:
         
         # 触发咬钩事件
         self.game_state.on_bite()
+        rarity = self.current_selected_fish[1]
+        self.qte_sequence = self._generate_qte_sequence(rarity)
+        self.qte_deadline = time.time() + self.catch_window
         
         # 在主线程中调用UI更新
         if self.on_bite_callback:
-            self.root.after(0, self.on_bite_callback)
+            self.root.after(0, lambda seq=self.qte_sequence: self.on_bite_callback(seq))
         
         # 启动反应时间窗口
         catch_thread = threading.Thread(target=self._catch_window_timer, daemon=True)
@@ -310,18 +770,16 @@ class FishingManager:
             if self.on_fishing_end_callback:
                 self.root.after(0, lambda: self.on_fishing_end_callback(False))
     
-    def try_catch(self):
-        """尝试捕获（按下空格键时调用）"""
+    def resolve_qte_success(self):
+        """QTE 成功，判定钓鱼成功"""
         if self.game_state.is_bite_occurred and not self.game_state.catch_success:
             if not self.current_selected_fish:
                 return False
-            
-            # 计算鱼的重量
             fish_name = self.current_selected_fish[0]
+            rarity = self.current_selected_fish[1]
             weight = self._calculate_fish_weight(self.current_selected_fish)
-            
-            # 成功钓到鱼
             self.game_state.on_catch_success(fish_name, weight)
+            self.game_state.add_caught_fish(fish_name, weight, rarity)
             if self.on_fishing_end_callback:
                 self.root.after(0, lambda: self.on_fishing_end_callback(True, fish_name, weight))
             return True
@@ -447,6 +905,9 @@ class HomeScene(BaseScene):
             bg="#F5F5F5"
         )
         title_label.pack(pady=(0, 20))
+
+        money_label = ttk.Label(self.frame, text=f"当前金币：{self.game_state.get_money():.0f}", font=("Microsoft YaHei", 10, "bold"))
+        money_label.pack(anchor="w", pady=(0, 8))
         
         # 功能区域
         # 1. 睡觉功能
@@ -457,6 +918,15 @@ class HomeScene(BaseScene):
             sleep_frame,
             text="睡觉",
             command=self._sleep
+        ).pack(side="left", padx=5)
+
+        # 1.5 集市
+        market_frame = StyledLabelFrame(self.frame, text="🛒 集市", padding="10")
+        market_frame.pack(fill="x", pady=(0, 10))
+        ModernButton(
+            market_frame,
+            text="卖鱼/买鱼饵礼物",
+            command=lambda: self.scene_manager.switch_scene("market")
         ).pack(side="left", padx=5)
         
         # 2. 家园信息（留空）
@@ -506,15 +976,24 @@ class HomeScene(BaseScene):
         # 5. 事件地点（留空）
         events_frame = StyledLabelFrame(self.frame, text="📍 事件地点", padding="10")
         events_frame.pack(fill="x", pady=(0, 10))
-        
-        events_label = tk.Label(
+        student_state = self.game_state.student_state
+        if student_state.get('met'):
+            status = "已发现求救，去看看林汐的状况。"
+        else:
+            status = "暂未发现事件，去河流或湖泊多钓鱼试试。"
+        tk.Label(
             events_frame,
-            text="商店、小镇等（预留：后续添加）",
+            text=status,
             font=("Microsoft YaHei", 9),
             bg="#F5F5F5",
-            fg="#888888"
-        )
-        events_label.pack(pady=10)
+            fg="#666666"
+        ).pack(anchor="w", pady=(0, 8))
+        ModernButton(
+            events_frame,
+            text="前往林汐的浅滩",
+            state="normal" if student_state.get('met') else "disabled",
+            command=lambda: self.scene_manager.switch_scene("student")
+        ).pack(side="left", padx=5)
     
     def _sleep(self):
         """睡觉功能"""
@@ -744,6 +1223,356 @@ class DataBookScene(BaseScene):
 
 
 # ==========================
+# 商店与集市场景
+# ==========================
+class MarketScene(BaseScene):
+    """卖鱼与购买道具"""
+
+    def create(self):
+        self.frame = ttk.Frame(self.parent)
+        self.frame.pack(fill="both", expand=True)
+
+        title_frame = ttk.Frame(self.frame)
+        title_frame.pack(fill="x", pady=(0, 12))
+        tk.Label(
+            title_frame,
+            text="🛒 小镇集市",
+            font=("Microsoft YaHei", 18, "bold"),
+            fg="#4CAAB9",
+            bg="#F5F5F5"
+        ).pack(side="left")
+
+        ModernButton(
+            title_frame,
+            text="返回家中",
+            command=lambda: self.scene_manager.switch_scene("home")
+        ).pack(side="right")
+
+        self.money_var = tk.StringVar()
+        ttk.Label(self.frame, textvariable=self.money_var, font=("Microsoft YaHei", 11, "bold"), foreground="#4CAAB9").pack(anchor="w", pady=(0, 8))
+
+        sell_frame = StyledLabelFrame(self.frame, text="💰 卖鱼换钱", padding="10")
+        sell_frame.pack(fill="x", pady=(0, 10))
+        self.sell_info_var = tk.StringVar()
+        ttk.Label(sell_frame, textvariable=self.sell_info_var).pack(anchor="w")
+        ModernButton(sell_frame, text="全部卖出", command=self._sell_all).pack(side="left", pady=4)
+
+        bait_frame = StyledLabelFrame(self.frame, text="🎣 鱼饵", padding="10")
+        bait_frame.pack(fill="x", pady=(0, 10))
+        self._build_buy_buttons(bait_frame, BAIT_CONFIG, category="bait")
+
+        rod_frame = StyledLabelFrame(self.frame, text="🪝 鱼竿 (延长QTE判定时间)", padding="10")
+        rod_frame.pack(fill="x", pady=(0, 10))
+        self._build_buy_buttons(rod_frame, ROD_CONFIG, category="rod", show_owned=True)
+
+        gift_frame = StyledLabelFrame(self.frame, text="🎁 礼物", padding="10")
+        gift_frame.pack(fill="x", pady=(0, 10))
+        self._build_buy_buttons(gift_frame, GIFT_SHOP_ITEMS, category="gift")
+
+        craft_frame = StyledLabelFrame(self.frame, text="🍳 烹饪/工具", padding="10")
+        craft_frame.pack(fill="x", pady=(0, 10))
+        self._build_buy_buttons(craft_frame, CRAFT_ITEMS, category="craft")
+
+        self._refresh()
+
+    def _build_buy_buttons(self, parent, config, category: str, show_owned=False):
+        for name, data in config.items():
+            price = data.get('price', 0)
+            row = ttk.Frame(parent)
+            row.pack(fill="x", pady=2)
+            extra = ""
+            if category == "bait":
+                count = self.game_state.inventory['bait_items'].get(name, 0)
+                extra = f"（库存 {count}）"
+            elif category == "gift":
+                count = self.game_state.inventory['gift_items'].get(name, 0)
+                extra = f"（库存 {count}）"
+            elif category == "craft":
+                count = self.game_state.inventory['craft_items'].get(name, 0)
+                extra = f"（库存 {count}）"
+            elif category == "rod" and show_owned:
+                owned = name in self.game_state.get_owned_rods()
+                extra = "（已拥有）" if owned else ""
+            ttk.Label(row, text=f"{name} - {price} 金 {extra}").pack(side="left")
+            ModernButton(row, text="购买", command=lambda n=name, c=category: self._buy(n, c)).pack(side="right")
+
+    def _buy(self, name: str, category: str):
+        price = 0
+        if category == "bait":
+            price = BAIT_CONFIG[name]['price']
+        elif category == "gift":
+            price = GIFT_SHOP_ITEMS[name]['price']
+        elif category == "craft":
+            price = CRAFT_ITEMS[name]['price']
+        elif category == "rod":
+            price = ROD_CONFIG[name]['price']
+            if name in self.game_state.get_owned_rods():
+                messagebox.showinfo("购买", "已经拥有该鱼竿。")
+                return
+        if not self.game_state.spend_money(price):
+            messagebox.showwarning("余额不足", "金币不够，先去卖鱼吧！")
+            return
+        if category == "bait":
+            self.game_state.acquire_item(name, 3 if price > 0 else 0)
+        elif category == "gift":
+            self.game_state.acquire_item(name, 1)
+        elif category == "craft":
+            self.game_state.acquire_item(name, 1)
+        elif category == "rod":
+            self.game_state.add_rod(name)
+        messagebox.showinfo("购买成功", f"获得 {name}")
+        self._refresh()
+
+    def _sell_all(self):
+        earnings, count = self.game_state.sell_all_fish()
+        messagebox.showinfo("卖鱼", f"卖出 {count} 条鱼，收入 {earnings:.1f} 金币。")
+        self._refresh()
+
+    def _refresh(self):
+        self.money_var.set(f"当前金币：{self.game_state.get_money():.0f}")
+        summary = self.game_state.fish_bag_summary()
+        if summary:
+            parts = [f"{name} x{data['count']} (~{data['total_weight']:.2f}kg)" for name, data in summary.items()]
+            self.sell_info_var.set("库存：" + "； ".join(parts))
+        else:
+            self.sell_info_var.set("库存：无鱼可卖")
+
+
+# ==========================
+# 林汐事件场景
+# ==========================
+class StudentScene(BaseScene):
+    """林汐事件与互动"""
+
+    def create(self):
+        self.frame = ttk.Frame(self.parent)
+        self.frame.pack(fill="both", expand=True)
+
+        # 心情衰减与每日委托初始化
+        self.game_state.apply_mood_decay()
+        self.game_state.ensure_daily_request()
+
+        title_frame = ttk.Frame(self.frame)
+        title_frame.pack(fill="x", pady=(0, 15))
+
+        tk.Label(
+            title_frame,
+            text="🎒 林汐的临时营地",
+            font=("Microsoft YaHei", 18, "bold"),
+            fg="#4CAAB9",
+            bg="#F5F5F5"
+        ).pack(side="left")
+
+        ModernButton(
+            title_frame,
+            text="返回家中",
+            command=lambda: self.scene_manager.switch_scene("home")
+        ).pack(side="right")
+
+        self.trust_var = tk.StringVar()
+        self.food_var = tk.StringVar()
+        self.status_var = tk.StringVar()
+        self.request_var = tk.StringVar()
+        self.decay_var = tk.StringVar()
+        self.gift_choice_var = tk.StringVar()
+
+        info_frame = StyledLabelFrame(self.frame, text="📖 事件概况", padding="12")
+        info_frame.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            info_frame,
+            textvariable=self.status_var,
+            font=("Microsoft YaHei", 10),
+            bg="#F5F5F5",
+            justify="left",
+            wraplength=560
+        ).pack(anchor="w")
+
+        ttk.Label(info_frame, textvariable=self.request_var, foreground="#4CAAB9").pack(anchor="w", pady=(6, 0))
+        ttk.Label(info_frame, textvariable=self.decay_var, foreground="#CC6600").pack(anchor="w", pady=(2, 0))
+
+        progress_frame = StyledLabelFrame(self.frame, text="📊 进度", padding="12")
+        progress_frame.pack(fill="x", pady=(0, 12))
+
+        # 信任条
+        ttk.Label(progress_frame, text="信任度").pack(anchor="w")
+        self.trust_bar = ttk.Progressbar(progress_frame, maximum=100, length=520)
+        self.trust_bar.pack(anchor="w", pady=4)
+        ttk.Label(progress_frame, textvariable=self.trust_var, foreground="#4CAAB9").pack(anchor="w")
+
+        # 补给条
+        ttk.Label(progress_frame, text="补给累计 (目标 8kg)" ).pack(anchor="w", pady=(10, 0))
+        self.food_bar = ttk.Progressbar(progress_frame, maximum=8.0, length=520)
+        self.food_bar.pack(anchor="w", pady=4)
+        ttk.Label(progress_frame, textvariable=self.food_var, foreground="#4CAAB9").pack(anchor="w")
+
+        action_frame = StyledLabelFrame(self.frame, text="🤝 互动", padding="12")
+        action_frame.pack(fill="x", pady=(0, 12))
+
+        ModernButton(
+            action_frame,
+            text="聊聊近况（信任+3）",
+            command=self._talk
+        ).pack(side="left", padx=6)
+
+        ModernButton(
+            action_frame,
+            text="安排救援返航",
+            command=self._try_rescue
+        ).pack(side="left", padx=6)
+
+        gift_frame = StyledLabelFrame(self.frame, text="🎁 赠送/烹饪", padding="12")
+        gift_frame.pack(fill="x", pady=(0, 12))
+
+        ttk.Label(gift_frame, text="可赠送物品：").pack(side="left")
+        self.gift_combo = ttk.Combobox(gift_frame, textvariable=self.gift_choice_var, width=40, state="readonly")
+        self.gift_combo.pack(side="left", padx=6)
+        ModernButton(gift_frame, text="赠送", command=self._gift).pack(side="left", padx=4)
+        ModernButton(gift_frame, text="简易烹饪（消耗1条鱼）", command=self._cook).pack(side="left", padx=4)
+
+        self._refresh()
+
+    def _refresh(self):
+        state = self.game_state.student_state
+        name = state.get('name', '林汐')
+        trust = state.get('trust', 0)
+        food = state.get('food_stock', 0.0)
+        rescued = state.get('rescued', False)
+        met = state.get('met', False)
+
+        if not met:
+            self.status_var.set("你尚未遇见任何求救信号。去河流或湖泊多钓几次吧！")
+        elif not rescued:
+            self.status_var.set(
+                f"{name} 在浅滩等待，你已向她送去 {food:.2f} kg 的鱼肉。信任越高，救援越顺利。"
+            )
+        else:
+            self.status_var.set(
+                f"{name} 已被安全送回。她现在会陪你钓鱼，缩短上钩等待时间。"
+            )
+
+        self.trust_var.set(f"当前信任度：{trust} / 100")
+        self.food_var.set(f"补给：{food:.2f} / 8.00 kg")
+        self.trust_bar['value'] = trust
+        self.food_bar['value'] = min(8.0, food)
+        daily = state.get('daily_request')
+        if daily:
+            desc = daily.get('desc', '')
+            self.request_var.set(f"今日委托：{desc}")
+        else:
+            self.request_var.set("今日委托：暂无")
+        last_gift = state.get('last_gift_date') or "暂无赠送记录"
+        self.decay_var.set(f"最近赠送：{last_gift}（超过2天未赠送会轻微掉信任）")
+
+        # 赠送选项
+        options = self._build_gift_options()
+        self.gift_options = options
+        if options:
+            self.gift_combo['values'] = [opt['display'] for opt in options]
+            self.gift_combo.current(0)
+        else:
+            self.gift_combo['values'] = ["（背包无可赠送物品）"]
+            self.gift_combo.current(0)
+
+    def _talk(self):
+        gained = self.game_state.boost_student_trust()
+        if gained > 0:
+            messagebox.showinfo("对话", f"你们聊了聊校园趣事，信任+{gained}")
+        else:
+            messagebox.showinfo("对话", "还未遇见林汐，先去钓鱼看看吧。")
+        self._refresh()
+
+    def _try_rescue(self):
+        if self.game_state.try_rescue_student():
+            messagebox.showinfo(
+                "救援成功",
+                "你把补给和绳索送达，林汐安全返回！\n她决定留下来帮忙，钓鱼等待时间将缩短。"
+            )
+        else:
+            messagebox.showwarning(
+                "条件不足",
+                "补给未达 8kg，或尚未遇见求救信号。继续钓鱼积累补给吧！"
+            )
+        self._refresh()
+
+    def _build_gift_options(self):
+        options = []
+        # 鱼类
+        for fish in self.game_state.fish_bag_summary().items():
+            name, data = fish
+            count = data['count']
+            avg_weight = data['total_weight'] / max(1, count)
+            options.append({
+                'display': f"鱼 x{count} | {name} (~{avg_weight:.2f}kg)",
+                'type': 'fish',
+                'name': name,
+                'weight': avg_weight
+            })
+        # 料理
+        cooked = self.game_state.inventory.get('cooked_items', {})
+        if cooked.get('烤鱼', 0) > 0:
+            options.append({
+                'display': f"烤鱼 x{cooked['烤鱼']} (热食)",
+                'type': 'cooked',
+                'name': '烤鱼',
+                'weight': 0.8,
+                'tags': ['热食', '鱼肉']
+            })
+        # 礼物
+        for name, count in self.game_state.inventory.get('gift_items', {}).items():
+            if count > 0:
+                options.append({
+                    'display': f"礼物 x{count} | {name}",
+                    'type': 'gift',
+                    'name': name,
+                    'tags': GIFT_SHOP_ITEMS.get(name, {}).get('tags', [])
+                })
+        return options
+
+    def _gift(self):
+        if not hasattr(self, 'gift_options') or not self.gift_options:
+            messagebox.showinfo("赠送", "背包里没有可赠送的物品。")
+            return
+        idx = self.gift_combo.current()
+        if idx < 0 or idx >= len(self.gift_options):
+            return
+        opt = self.gift_options[idx]
+        if opt['type'] == 'fish':
+            fish = self.game_state.remove_one_fish(opt['name'])
+            if not fish:
+                messagebox.showwarning("赠送", "鱼袋里已经没有这种鱼了。")
+                self._refresh()
+                return
+            weight = fish.get('weight', opt.get('weight', 0.5))
+            result = self.game_state.gift_to_student(opt['name'], tags=['生鱼', '鱼肉'], weight=weight)
+            message = f"送出 {opt['name']}，信任变化 {result['trust_delta']}，累计补给 {result['food_stock']:.2f} kg"
+            messagebox.showinfo("赠送成功", message)
+        elif opt['type'] == 'cooked':
+            if not self.game_state.consume_item(opt['name']):
+                messagebox.showwarning("赠送", "没有烤鱼可送。")
+                self._refresh()
+                return
+            result = self.game_state.gift_to_student(opt['name'], tags=opt.get('tags', []), weight=1.0)
+            messagebox.showinfo("赠送成功", f"送出热乎的烤鱼，信任变化 {result['trust_delta']}")
+        else:
+            if not self.game_state.consume_item(opt['name']):
+                messagebox.showwarning("赠送", "礼物数量不足。")
+                self._refresh()
+                return
+            result = self.game_state.gift_to_student(opt['name'], tags=opt.get('tags', []), weight=0.0)
+            messagebox.showinfo("赠送成功", f"送出 {opt['name']}，信任变化 {result['trust_delta']}")
+        self._refresh()
+
+    def _cook(self):
+        ok, msg = self.game_state.cook_one_fish()
+        if ok:
+            messagebox.showinfo("烹饪", msg)
+        else:
+            messagebox.showwarning("烹饪", msg)
+        self._refresh()
+
+
+# ==========================
 # 钓鱼场景
 # ==========================
 class FishingScene(BaseScene):
@@ -792,6 +1621,13 @@ class FishingScene(BaseScene):
         self.status_var = tk.StringVar(value="🟢 就绪")
         self.info_var = tk.StringVar(value="点击'开始钓鱼'按钮开始游戏")
         self.bite_alert_var = tk.StringVar(value="")
+        self.qte_var = tk.StringVar(value="")
+        self.environment_var = tk.StringVar(value="")
+        self.money_var = tk.StringVar(value=f"金币：{self.game_state.get_money():.0f}")
+        self.qte_sequence = []
+        self.qte_index = 0
+        self.qte_deadline = None
+        self.qte_timer_id = None
         
         # 呼吸灯点相关
         self.breathing_frame = None
@@ -800,8 +1636,8 @@ class FishingScene(BaseScene):
         self.breathing_animation_id = None
         self.breathing_phase = 0  # 动画相位
         
-        # 绑定空格键
-        self.scene_manager.root.bind('<KeyPress-space>', self._on_space_pressed)
+        # 绑定键盘
+        self.scene_manager.root.bind('<KeyPress>', self._on_key_pressed)
         self.scene_manager.root.focus_set()
         
         # 创建界面组件
@@ -831,6 +1667,35 @@ class FishingScene(BaseScene):
             wraplength=500
         )
         info_label.pack(pady=10)
+
+        env_frame = ttk.Frame(game_frame)
+        env_frame.pack(fill="x", pady=(0, 6))
+        ttk.Label(env_frame, textvariable=self.environment_var).pack(side="left", padx=4)
+        ttk.Label(env_frame, textvariable=self.money_var, foreground="#4CAAB9").pack(side="right", padx=4)
+
+        equip_frame = ttk.Frame(game_frame)
+        equip_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(equip_frame, text="鱼饵：").pack(side="left")
+        self.bait_combo = ttk.Combobox(
+            equip_frame,
+            values=list(BAIT_CONFIG.keys()),
+            state="readonly",
+            width=12
+        )
+        self.bait_combo.set(self.game_state.inventory.get('selected_bait', '普通鱼饵'))
+        self.bait_combo.bind("<<ComboboxSelected>>", lambda e: self._on_bait_change())
+        self.bait_combo.pack(side="left", padx=4)
+        ttk.Label(equip_frame, text="鱼竿：").pack(side="left", padx=(10, 0))
+        self.rod_combo = ttk.Combobox(
+            equip_frame,
+            values=self.game_state.get_owned_rods(),
+            state="readonly",
+            width=12
+        )
+        self.rod_combo.set(self.game_state.inventory.get('equipped_rod', '木质竿'))
+        self.rod_combo.bind("<<ComboboxSelected>>", lambda e: self._on_rod_change())
+        self.rod_combo.pack(side="left", padx=4)
+        ttk.Label(equip_frame, text="(高级鱼竿延长QTE时间)").pack(side="left", padx=6)
         
         # 呼吸灯点区域（钓鱼时显示）
         self.breathing_frame = ttk.Frame(game_frame)
@@ -868,6 +1733,15 @@ class FishingScene(BaseScene):
             bg="#F5F5F5"
         )
         bite_alert_label.pack(pady=20)
+
+        qte_label = tk.Label(
+            game_frame,
+            textvariable=self.qte_var,
+            font=("Consolas", 12, "bold"),
+            fg="#444444",
+            bg="#F5F5F5"
+        )
+        qte_label.pack(pady=(0, 10))
         
         # 操作按钮区域
         button_frame = ttk.Frame(game_frame)
@@ -894,7 +1768,7 @@ class FishingScene(BaseScene):
         
         ttk.Label(
             status_bar,
-            text="提示: 咬钩后按空格键捕获！",
+            text="提示: 咬钩后按提示键完成QTE (最后一键总是空格)。",
             anchor="w"
         ).pack(fill="x", padx=8, pady=4)
     
@@ -951,11 +1825,14 @@ class FishingScene(BaseScene):
         """开始钓鱼"""
         if self.fishing_manager.start_fishing():
             self.status_var.set("🎣 钓鱼中...")
-            self.info_var.set("等待鱼儿上钩...")
+            self.info_var.set("等待鱼儿上钩... 天气与时间会影响上钩速度和稀有度。")
             self.bite_alert_var.set("")
+            self.qte_var.set("")
             self.fishing_button.config(state="disabled")
             self.cancel_button.config(state="normal")
             self._start_breathing()
+            self._refresh_environment_display()
+            self._refresh_money_display()
             self.scene_manager.root.focus_set()
     
     def _cancel_fishing(self):
@@ -964,25 +1841,31 @@ class FishingScene(BaseScene):
             self.status_var.set("🟢 就绪")
             self.info_var.set("已取消钓鱼")
             self.bite_alert_var.set("")
+            self.qte_var.set("")
             self._stop_breathing()
             self.fishing_button.config(state="normal")
             self.cancel_button.config(state="disabled")
     
-    def _on_bite(self):
+    def _on_bite(self, sequence):
         """咬钩事件处理"""
+        self.qte_sequence = sequence or []
+        self.qte_index = 0
+        self.qte_deadline = time.time() + self.fishing_manager.catch_window
         self._stop_breathing()
         self.status_var.set("⚡ 上钩了！")
-        self.info_var.set("快速按空格键捕获！")
+        self.info_var.set("按提示键完成QTE，最后一键一定是空格！")
         self.bite_alert_var.set("上钩！")
+        self._update_qte_label()
     
     def _on_fishing_end(self, success: bool, fish_name: str = None, weight: float = None):
         """钓鱼结束事件处理"""
         self._stop_breathing()
-        
+        self.qte_var.set("")
         if success and fish_name and weight:
             self.status_var.set("✅ 成功钓到鱼！")
             self.info_var.set(f"恭喜！你成功捕获了 {fish_name}（{weight}kg）！")
             messagebox.showinfo("成功", f"🎉 成功钓到 {fish_name}！\n重量：{weight}kg")
+            self._check_student_event(fish_name, weight)
         else:
             self.status_var.set("❌ 失败")
             self.info_var.set("反应太慢了，鱼儿跑掉了...")
@@ -995,17 +1878,92 @@ class FishingScene(BaseScene):
         
         # 重置游戏状态
         self.game_state.reset_fishing_state()
-    
-    def _on_space_pressed(self, event):
-        """空格键按下事件处理"""
-        if self.game_state.is_bite_occurred:
-            self.fishing_manager.try_catch()
+
+    def _on_key_pressed(self, event):
+        """键盘按下事件处理，用于QTE"""
+        if not self.game_state.is_bite_occurred:
+            return
+        if not self.qte_sequence:
+            return
+        key = event.keysym.lower()
+        if key == 'space':
+            key = 'space'
+        if time.time() > (self.qte_deadline or 0):
+            self._fail_qte()
+            return
+        expected = self.qte_sequence[self.qte_index]
+        if key == expected:
+            self.qte_index += 1
+            self._update_qte_label()
+            if self.qte_index >= len(self.qte_sequence):
+                self.fishing_manager.resolve_qte_success()
+        else:
+            self._fail_qte()
+
+    def _fail_qte(self):
+        self.game_state.on_catch_failed()
+        self._on_fishing_end(False)
+        self.game_state.reset_fishing_state()
+        self.qte_sequence = []
+        self.qte_index = 0
+        self.qte_deadline = None
+
+    def _update_qte_label(self):
+        if not self.qte_sequence:
+            self.qte_var.set("")
+            return
+        parts = []
+        for idx, key in enumerate(self.qte_sequence):
+            if idx == self.qte_index:
+                parts.append(f"[{key.upper()}]")
+            else:
+                parts.append(key.upper())
+        remain = max(0.0, (self.qte_deadline or time.time()) - time.time())
+        self.qte_var.set(" -> ".join(parts) + f"    剩余 {remain:.1f}s")
+
+    def _refresh_environment_display(self):
+        weather = getattr(self.game_state, 'current_weather', '晴朗')
+        slot = getattr(self.game_state, 'current_time_slot', '清晨')
+        bait = self.game_state.inventory.get('selected_bait', '普通鱼饵')
+        rod = self.game_state.inventory.get('equipped_rod', '木质竿')
+        self.environment_var.set(f"天气：{weather}｜时间：{slot}｜鱼饵：{bait}｜鱼竿：{rod}")
+
+    def _refresh_money_display(self):
+        self.money_var.set(f"金币：{self.game_state.get_money():.0f}")
+
+    def _on_bait_change(self):
+        bait = self.bait_combo.get()
+        self.game_state.select_bait(bait)
+        self._refresh_environment_display()
+
+    def _on_rod_change(self):
+        rod = self.rod_combo.get()
+        self.game_state.equip_rod(rod)
+        self._refresh_environment_display()
+
+    def _check_student_event(self, fish_name: str, weight: float):
+        """检查女高中生事件触发与加成"""
+        state = self.game_state.student_state
+        # 首次遇见：在河流或湖泊捕鱼时概率触发
+        if not state.get('met') and self.location in ("河流", "湖泊"):
+            state['encounter_rolls'] = state.get('encounter_rolls', 0) + 1
+            chance = min(0.6, 0.18 + 0.08 * state['encounter_rolls'])
+            if random.random() < chance:
+                self.game_state.register_student_encounter()
+                messagebox.showinfo(
+                    "漂流瓶",
+                    "你钓起了一个漂流瓶，里面的字条写着：\n\n我是附近高中的社团实习生林汐，被困在浅滩，请带上食物和绳索来帮忙！\n\n回到家中后，可以在事件里找到她的求救位置。"
+                )
+                return
+        # 已遇见：提示去事件面板赠送或烹饪
+        if state.get('met'):
+            self.info_var.set("可在事件面板赠送鱼或礼物提升好感，或卖鱼换钱去买喜好物。")
     
     def destroy(self):
         """销毁场景（解绑按键事件）"""
         if self.frame:
             # 解绑空格键（避免影响其他场景）
-            self.scene_manager.root.unbind('<KeyPress-space>')
+            self.scene_manager.root.unbind('<KeyPress>')
             self.frame.destroy()
 
 
@@ -1013,7 +1971,7 @@ class FishingScene(BaseScene):
 # 游戏UI界面（主界面管理器）
 # ==========================
 class FishingGameUI:
-    APP_NAME = "🎣 钓鱼小游戏"
+    APP_NAME = "🎣 钓鱼，然后捡到女高中生"
     
     def __init__(self, root):
         self.root = root
@@ -1035,6 +1993,8 @@ class FishingGameUI:
         self.scene_manager.register_scene("home", HomeScene)
         self.scene_manager.register_scene("fishing", FishingScene)
         self.scene_manager.register_scene("data_book", DataBookScene)
+        self.scene_manager.register_scene("student", StudentScene)
+        self.scene_manager.register_scene("market", MarketScene)
         
         # 初始化场景（家场景）
         self.scene_manager.switch_scene("home")
