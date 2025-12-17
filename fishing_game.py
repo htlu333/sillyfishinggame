@@ -193,6 +193,7 @@ def _default_inventory_state():
         'exp': 0,        # 当前经验值
         'level': 1,      # 当前等级（1-10）
         'day': 1,        # 当前天数（从第一天开始）
+        'last_level_up_day': 0,  # 最后一次升级的天数（0表示从未升级）
         'selected_bait': '普通鱼饵',
         'owned_rods': ['木质竿'],
         'equipped_rod': '木质竿',
@@ -457,10 +458,16 @@ class GameState:
         """
         current_level = self.get_level()
         current_exp = self.get_exp()
+        current_day = self.get_day()
+        last_level_up_day = self.inventory.get('last_level_up_day', 0)
         
         # 如果已满级，不添加经验
         if current_level >= 10:
             return {'exp_added': 0, 'leveled_up': False, 'new_level': current_level, 'unlocked_location': None}
+        
+        # 如果今天已经升级过，不添加经验
+        if last_level_up_day >= current_day:
+            return {'exp_added': 0, 'leveled_up': False, 'new_level': current_level, 'unlocked_location': None, 'note': '今天已经升级过了，明天再来获得经验吧！'}
         
         # 添加经验
         new_exp = current_exp + amount
@@ -468,7 +475,7 @@ class GameState:
         leveled_up = False
         unlocked_location = None
         
-        # 检查是否升级
+        # 检查是否升级（每天最多升级一次）
         while new_level < 10:
             exp_needed = LEVEL_UP_EXP.get(new_level, 0)
             if exp_needed == 0:  # 已满级或配置错误
@@ -477,10 +484,14 @@ class GameState:
                 new_exp -= exp_needed
                 new_level += 1
                 leveled_up = True
+                # 记录升级的天数
+                self.inventory['last_level_up_day'] = current_day
                 # 检查是否解锁了新地点
                 for location, unlock_level in LOCATION_UNLOCK_LEVEL.items():
                     if new_level == unlock_level:
                         unlocked_location = location
+                # 每天只能升级一次，所以升级后立即退出循环
+                break
             else:
                 break
         
@@ -1840,6 +1851,7 @@ class FishingScene(BaseScene):
     def __init__(self, parent, game_state: GameState, scene_manager: SceneManager, location="默认地点"):
         super().__init__(parent, game_state, scene_manager)
         self.location = location
+        self._failure_popup_shown = False  # 标志：是否已显示失败弹窗
         
     def create(self):
         """创建钓鱼场景界面"""
@@ -2099,6 +2111,8 @@ class FishingScene(BaseScene):
             self._refresh_money_display()
             self._refresh_level_display()
             self.scene_manager.root.focus_set()
+            # 开始新的钓鱼时重置失败弹窗标志
+            self._failure_popup_shown = False
     
     def _cancel_fishing(self):
         """取消钓鱼"""
@@ -2133,6 +2147,9 @@ class FishingScene(BaseScene):
             info_parts = [f"恭喜！你成功捕获了 {fish_name}（{weight}kg）！"]
             if exp_gain > 0:
                 info_parts.append(f"获得经验 +{exp_gain}")
+            elif level_result and level_result.get('note'):
+                # 如果今天已升级，显示提示信息
+                info_parts.append(level_result.get('note', ''))
             self.info_var.set(" | ".join(info_parts))
             
             # 构建消息框内容
@@ -2143,6 +2160,9 @@ class FishingScene(BaseScene):
                 exp_needed = self.game_state.get_exp_for_next_level()
                 if exp_needed > 0:
                     msg_parts.append(f"\n当前经验：{current_exp}/{exp_needed}")
+            elif level_result and level_result.get('note'):
+                # 如果今天已升级，显示提示信息
+                msg_parts.append(f"\n{level_result.get('note', '')}")
             
             # 检查是否升级
             if level_result and level_result.get('leveled_up'):
@@ -2155,10 +2175,15 @@ class FishingScene(BaseScene):
             messagebox.showinfo("成功", "\n".join(msg_parts))
             self._check_student_event(fish_name, weight)
             self._refresh_level_display()
+            # 成功后重置失败弹窗标志
+            self._failure_popup_shown = False
         else:
             self.status_var.set("❌ 失败")
             self.info_var.set("反应太慢了，鱼儿跑掉了...")
-            messagebox.showwarning("失败", "反应太慢了，鱼儿跑掉了！")
+            # 只在第一次失败时显示弹窗
+            if not self._failure_popup_shown:
+                messagebox.showwarning("失败", "反应太慢了，鱼儿跑掉了！")
+                self._failure_popup_shown = True
         
         # 重置界面
         self.bite_alert_var.set("")
