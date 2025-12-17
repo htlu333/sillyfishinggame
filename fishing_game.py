@@ -633,7 +633,8 @@ class GameState:
         rod = self.inventory.get('equipped_rod', '木质竿')
         rod_bonus = ROD_CONFIG.get(rod, {}).get('window', 1.0)
         trust_bonus = 0.1 if self.student_state.get('rescued') else 0.0
-        return 1.0 * rod_bonus + trust_bonus
+        # 初始QTE时间为2秒，然后按鱼竿倍率增加
+        return 2.0 * rod_bonus + trust_bonus
 
     def get_wait_time_multiplier(self) -> float:
         """根据伙伴和天气加成调整等待时间"""
