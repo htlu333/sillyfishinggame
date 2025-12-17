@@ -225,7 +225,8 @@ class FishingManager:
     
     def _select_fish_by_probability(self, location: str):
         """根据概率选择要钓的鱼"""
-        fish_list = LOCATION_FISH_CONFIG.get(location, LOCATION_FISH_CONFIG["default"])
+        # 如果地点不存在，默认使用小溪
+        fish_list = LOCATION_FISH_CONFIG.get(location, LOCATION_FISH_CONFIG["小溪"])
         
         # 计算总权重
         total_weight = sum(weight for _, _, _, _, weight, _ in fish_list)
